@@ -1,0 +1,31 @@
+```{r}
+diff_nodes_graph<-function(T_Collapsed, n, mat_list, g.list, alpha){
+  require(igraph)
+  require(muxViz)
+  #Las listas solo deben contener dos elementos cada una.
+  if(length(mat_list)>2 | length(g.list)>2){
+    print("El input es una red bipartita")
+  } else if(length(mat_list)==2 & length(g.list)==2){
+    #Se consideran solo los "n" nodos más abundantes.
+    most_ab<-sort(apply(t(T_Collapsed), 1, sum),
+                  decreasing = T, index.return = F)[1:n]
+    #Se aislan las abundancias de los nodos seleccionados.
+    most_layer<-list()
+    for(i in 1:length(mat_list)){
+      most_layer[[i]]<-mat_list[[i]][, names(most_ab)]
+    }
+    #Se fusionan las capas.
+    aggregated_g<-GetAggregateNetworkFromNetworkList(g.list)
+    #Se realiza el t-test.
+    alpha<-alpha
+    for(i in 1:length(most_ab)){
+      if(t.test(most_layer[[1]][,i], most_layer[[2]][,i])$p.value<=alpha){
+        V(aggregated_g)[names(most_ab[i])]$colorA<-"blue"
+      } else if(t.test(most_layer[[1]][,i], most_layer[[2]][,i])$p.value>alpha){
+        V(aggregated_g)[names(most_ab[i])]$colorA<-"red"
+      }
+    }
+    return(aggregated_g)
+  }
+}
+```
