@@ -1,0 +1,288 @@
+# Multiplex Lema-Datura ARACNe {-}
+
+Se cargan los datos y se extraen los datos de los taxones y los otus almacenados en objeto ps2.
+```{r echo=FALSE, cache=FALSE, results=FALSE, warning=FALSE, comment=FALSE, writing=FALSE}
+library(igraph)
+library(phyloseq)
+setwd("C:/Users/LaV_V/Downloads")
+print(load("mis_phyloseq.RData"))
+T_table<-as.data.frame(tax_table(ps2)); dim(T_table)
+O_table<-as.data.frame(t(otu_table(ps2))); dim(O_table)
+```
+Se ingresa primero la tabla de taxones, luego la tabla de otus y finalmente el nivel taxonómico al cual se desea sintetizar la tabla.
+```{r echo=FALSE, cache=FALSE, results=FALSE, warning=FALSE, comment=FALSE, writing=FALSE}
+T_Collapsed<-T_collapse(T_table = T_table, O_table = O_table,
+                        names_level = "Genus")
+dim(T_Collapsed)
+```
+
+Se identifican los elementos no clasificados para ser eliminados.
+```{r}
+colnames(T_Collapsed)[1:10]
+T_Collapsed<-T_Collapsed[, -c(which(colnames(T_Collapsed) == "unclassified"))]
+colnames(T_Collapsed)[1:10]
+```
+
+Se identifican los elementos pertenecientes a la planta y al insecto.
+```{r}
+Insect<-which(sample_data(ps2)$Type =="Insect")
+Insect<-sample_data(ps2)$ID[Insect]; Insect
+Plant<-which(sample_data(ps2)$Type =="Plant")
+Plant<-sample_data(ps2)$ID[Plant]; Plant
+```
+
+Generamos matrices independientes para los datos de la planta y del insecto.
+```{r}
+Insectmat <- T_Collapsed[Insect,]
+Plantmat <- T_Collapsed[Plant,]
+```
+
+Construímos la red correspondiente a los datos de abundancias del insecto utilizando el algoritmo de inferencia ARACNe
+```{r echo=FALSE, cache=FALSE, results=FALSE, warning=FALSE, comment=FALSE, writing=FALSE}
+library(minet)
+mim <- build.mim(Insectmat,estimator="spearman")
+InsectmatA <- aracne(mim)
+insect_aracne<-graph.adjacency(InsectmatA)
+insect_aracne<-as.undirected(insect_aracne)
+plot_network(insect_aracne)
+```
+
+Construímos la red correspondiente a los datos de abundancias de la planta.
+```{r}
+mim <- build.mim(Plantmat,estimator="spearman")
+PlantmatA <- aracne(mim)
+plant_aracne<-graph.adjacency(PlantmatA)
+plant_aracne<-as.undirected(plant_aracne)
+plot_network(plant_aracne)
+```
+Distribución del degree
+```{r cache=FALSE, results=FALSE, warning=FALSE, comment=FALSE, writing=FALSE}
+par(mfrow=c(1,2))
+
+# Calculamos la densidad
+dx1 <- density(degree(insect_aracne), bw = 1)
+dx2 <- density(degree(plant_aracne), bw = 1)
+
+# Creamos los histogramas con sus respectivas curvas de densidad y ruido asociado en el eje x.
+hist(degree(insect_aracne), freq = FALSE, main = "Insect", ylab = "Density",
+     col = "khaki")
+lines(dx1, lwd = 2, col = "red")
+rug(jitter(degree(insect_aracne)))
+
+hist(degree(plant_aracne), freq = FALSE, main = "Plant", ylab = "Density",
+     col = "khaki")
+lines(dx2, lwd = 2, col = "blue")
+rug(jitter(degree(plant_aracne)))
+
+par(mfrow=c(1,1))
+```
+Comparación de la distribución del degree entre capas y análisis de normalidad.
+```{r cache=FALSE, results=FALSE, warning=FALSE, comment=FALSE, writing=FALSE}
+# Aumentamos la resolución para visualizar mejor las diferencias
+dx1 <- density(degree(insect_aracne), bw = 0.1)
+dx2 <- density(degree(plant_aracne), bw = 0.1)
+
+# Graficamos las densidades
+plot(dx1, lwd = 2, main = "Degree dendities", xlab = "",
+     col = "red", xlim = c(-4, 6), ylim = c(0, 0.5))
+rug(jitter(degree(insect_aracne)), col = "red")
+
+lines(dx2, lwd = 2, col = "blue")
+rug(jitter(degree(plant_aracne)), col = "blue")
+
+Groups<-c("Insect", "Plant")
+legend("topleft", Groups, col = c("Red", "Blue"), lty = 1) 
+
+# Normalidad y resumen estadístico
+shapiro.test(degree(insect_aracne))
+summary(degree(insect_aracne))
+shapiro.test(degree(plant_aracne))
+summary(degree(plant_aracne))
+```
+Se colorean las redes a nivel de phylum usando la función v_colored()
+```{r}
+unq<-unique(T_table[,"Phylum"])
+colors<-rainbow(length(unq))
+insect_aracne<-v_colored(insect_aracne, T_table, g_tax = "Phylum",
+               p_tax = "Genus", g_colors = colors)
+plant_aracne<-v_colored(plant_aracne, T_table, g_tax = "Phylum", p_tax = "Genus",
+                   g_colors = colors)
+#Gráfico de insecto
+plot(insect_aracne, vertex.label.color="black",
+     vertex.color = vertex.attributes(insect_aracne)$color, vertex.label.cex=.5,
+     vertex.label.dist=1,layout=layout_with_kk, vertex.size = 5)
+legend(x=-2.7, y=-0.3, unq, title = "Insect", pch=21, pt.bg=colors, pt.cex=2, cex=.8, bty="n", ncol=1)
+#Gráfico de planta
+plot(plant_aracne, vertex.label.color="black",
+     vertex.color = vertex.attributes(plant_aracne)$color, vertex.label.cex=.5,
+     vertex.label.dist=1,layout=layout_with_kk, vertex.size = 5)
+legend(x=-2.7, y=-0.3, unq, title = "Plant", pch=21, pt.bg=colors, pt.cex=2, cex=.8, bty="n", ncol=1)
+```
+Graficamos las abundancias relativas de ambas capas con la función g_abundance()
+```{r}
+insect_aracne<-g_abundance(layer_mat = Insectmat, g = insect_aracne)
+plant_aracne<-g_abundance(layer_mat = Plantmat, g = plant_aracne)
+plot(insect_aracne, vertex.label.color="black",
+      vertex.color = vertex.attributes(insect_aracne)$rel_ab, vertex.label.cex=.5,
+      vertex.label.dist=1,layout=layout_with_kk, vertex.size = 5)
+plot(plant_aracne, vertex.label.color="black",
+      vertex.color = vertex.attributes(plant_aracne)$rel_ab, vertex.label.cex=.5,
+      vertex.label.dist=1,layout=layout_with_kk, vertex.size = 5)
+```
+Generamos un objeto muxViz como una lista de redes igraph, y se construye una matriz de abundancias.
+```{r}
+library(muxViz)
+g.list<-list(insect_aracne, plant_aracne)
+insect_ab<-colSums(Insectmat)
+insect_ab<-as.numeric((insect_ab)/insect_ab[which.max(insect_ab)])
+plant_ab<-colSums(Plantmat)
+plant_ab<-as.numeric((plant_ab)/plant_ab[which.max(plant_ab)])
+abundances<-c(insect_ab, plant_ab)
+Nodes<-length(V(insect_aracne))
+Layers<-length(g.list)
+node.ab.matrix <- matrix((abundances+1)*10, Nodes, Layers)
+```
+Construímos el gráfico 3D de una red multicapa multiplex con el paquete muxViz.
+```{r echo=FALSE, cache=FALSE, results=FALSE, warning=FALSE, comment=FALSE, warning=FALSE}
+lay <- layoutMultiplex(g.list, layout="fr", ggplot.format=F, box=T)
+plot_multiplex3D(g.list, layer.layout=lay,
+                 layer.colors=rainbow(length(g.list)),
+                 layer.shift.x=0.5, layer.space=2,
+                 layer.labels=c("Insect", "Plant"), layer.labels.cex=1.5,
+                 node.size.values=node.ab.matrix, node.size.scale=0.6,
+                 node.colors=vertex.attributes(insect_aracne)$color,
+                 edge.colors="white",
+                 node.colors.aggr=vertex.attributes(insect_aracne)$color,
+                 show.aggregate=T)
+```
+Buscamos a qué clado pertenece cada uno de los géneros.
+```{r}
+insect_aracne<-TaxGroup(insect_aracne, T_table, "Phylum", "Genus")
+plant_aracne<-TaxGroup(plant_aracne, T_table, "Phylum", "Genus")
+vertex.attributes(insect_aracne)$Taxon[1:12]
+```
+Análisis de clusters
+```{r}
+insect_aracneA<-delete.vertices(insect_aracne, which(degree(insect_aracne) == 0))
+insect_cluster<-cluster_louvain(insect_aracneA)
+plot(insect_cluster, insect_aracneA, vertex.label.color="black",
+     vertex.label.cex=.5,layout=layout_with_kk, vertex.size = 5)
+plant_aracneA<-delete.vertices(plant_aracne, which(degree(plant_aracne) == 0))
+plant_cluster<-cluster_louvain(plant_aracneA)
+plot(plant_cluster, plant_aracneA, vertex.label.color="black",
+     vertex.label.cex=.5,layout=layout_with_kk, vertex.size = 5)
+```
+Visualización de redes individuales en función del degree.
+```{r}
+g.list_d<-ctr(g.list, ctr_type = "degree")
+plot(g.list_d[[1]], vertex.label.color="black",
+     vertex.color = vertex.attributes(g.list_d[[1]])$hl, vertex.label.cex=.5,
+     vertex.label.dist=1,layout=layout_with_kk, vertex.size = 5)
+title(main = "Insect")
+
+plot(g.list_d[[2]], vertex.label.color="black",
+     vertex.color = vertex.attributes(g.list_d[[2]])$hl, vertex.label.cex=.5,
+     vertex.label.dist=1,layout=layout_with_kk, vertex.size = 5)
+title(main = "Plant")
+```
+Construcción de gráfico de red multiplex 3D para degree.
+```{r}
+hl1<-as.vector(vertex.attributes(g.list_d[[1]])$hl)
+hl2<-as.vector(vertex.attributes(g.list_d[[2]])$hl)
+hl_colors<-c(hl1, hl2)
+Nodes<-length(V(g.list[[1]]))
+Layers<-length(g.list)
+node.colors.matrix <- matrix(hl_colors, Nodes, Layers)
+lay <- layoutMultiplex(g.list_d, layout="fr", ggplot.format=F, box=T)
+plot_multiplex3D(g.list_d, layer.layout=lay,
+                 layer.colors=rainbow(length(g.list_d)),
+                 layer.shift.x=0.5, layer.space=2,
+                 layer.labels=c("Insect", "Plant"), layer.labels.cex=1.5,
+                 node.size.values="auto", node.size.scale=0.8,
+                 node.colors=node.colors.matrix, edge.colors="#dadada",
+                 show.aggregate=F)
+```
+Construcción de gráfico de red multiplex 3D para betweenness.
+```{r}
+g.list_bt<-ctr(g.list, ctr_type = "betweenness")
+hl1<-as.vector(vertex.attributes(g.list_bt[[1]])$hl)
+hl2<-as.vector(vertex.attributes(g.list_bt[[2]])$hl)
+hl_colors<-c(hl1, hl2)
+node.colors.matrix <- matrix(hl_colors, Nodes, Layers)
+lay <- layoutMultiplex(g.list_bt, layout="fr", ggplot.format=F, box=T)
+plot_multiplex3D(g.list_bt, layer.layout=lay,
+                 layer.colors=rainbow(length(g.list_bt)),
+                 layer.shift.x=0.5, layer.space=2,
+                 layer.labels=c("Insect", "Plant"), layer.labels.cex=1.5,
+                 node.size.values="auto", node.size.scale=0.8,
+                 node.colors=node.colors.matrix, edge.colors="#dadada",
+                 show.aggregate=F)
+```
+Construcción de gráfico de red multiplex 3D para closeness.
+```{r echo=FALSE, cache=FALSE, results=FALSE, warning=FALSE, comment=FALSE, writing=FALSE}
+g.list_cl<-ctr(g.list, ctr_type = "closeness")
+hl1<-as.vector(vertex.attributes(g.list_cl[[1]])$hl)
+hl2<-as.vector(vertex.attributes(g.list_cl[[2]])$hl)
+hl_colors<-c(hl1, hl2)
+node.colors.matrix <- matrix(hl_colors, Nodes, Layers)
+lay <- layoutMultiplex(g.list_cl, layout="fr", ggplot.format=F, box=T)
+plot_multiplex3D(g.list_cl, layer.layout=lay,
+                 layer.colors=rainbow(length(g.list_cl)),
+                 layer.shift.x=0.5, layer.space=2,
+                 layer.labels=c("Insect", "Plant"), layer.labels.cex=1.5,
+                 node.size.values="auto", node.size.scale=0.8,
+                 node.colors=node.colors.matrix, edge.colors="#dadada",
+                 show.aggregate=F)
+```
+Generamos redes agregadas para cada tipo de centralidad y las introducimos como un objeto muxViz. Generamos una matriz de colores correspondiente a tres tipos distintos de centralidades: degree, betweenness y closeness.
+```{r}
+net_d<-GetAggregateNetworkFromNetworkList(g.list_d)
+net_bt<-GetAggregateNetworkFromNetworkList(g.list_bt)
+net_cl<-GetAggregateNetworkFromNetworkList(g.list_cl)
+central_muxlist<-list(net_d, net_bt, net_cl)
+
+d<-ctr(central_muxlist, ctr_type = "degree")
+hl_d<-as.vector(vertex.attributes(d[[1]])$hl)
+bt<-ctr(central_muxlist, ctr_type = "betweenness")
+hl_bt<-as.vector(vertex.attributes(bt[[2]])$hl)
+cl<-ctr(central_muxlist, ctr_type = "closeness")
+hl_cl<-as.vector(vertex.attributes(cl[[3]])$hl)
+
+hl_colors2<-c(hl_d, hl_bt, hl_cl)
+Nodes<-length(V(central_muxlist[[1]]))
+Layers<-length(central_muxlist)
+node.colors.matrix <- matrix(hl_colors2, Nodes, Layers)
+```
+Se genera una matriz de abundancias.
+```{r}
+collapsed_ab<-colSums(T_Collapsed)
+collapsed_ab<-as.numeric(collapsed_ab/collapsed_ab[which.max(collapsed_ab)])
+collapsed_ab<-c(collapsed_ab, collapsed_ab, collapsed_ab)
+Nodes<-length(V(central_muxlist[[1]]))
+Layers<-length(central_muxlist)
+node.ab.matrix <- matrix((collapsed_ab+1)*10, Nodes, Layers)
+```
+Construímos un gráfico 3D representando los tres tipos de centralidad en un gradiente de color y el tamaño de los nodos en función de las abundancias.
+```{r cache=FALSE, results=FALSE, warning=FALSE, comment=FALSE, writing=FALSE}
+
+lay <- layoutMultiplex(central_muxlist, layout="fr", ggplot.format=F, box=T)
+plot_multiplex3D(central_muxlist, layer.layout=lay,
+                 layer.colors=rainbow(length(central_muxlist)),
+                 layer.shift.x=0.5, layer.space=2,
+                 layer.labels=c("Degree", "Betweenness", "Closeness"),    
+                 layer.labels.cex=1.5,
+                 node.size.values=node.ab.matrix, node.size.scale=0.8,
+                 node.colors=node.colors.matrix, edge.colors="#dadada",
+                 show.aggregate=F)
+```
+Identificamos diferencias significativas en las abundancias de los nodos entre capas mediante la función diff_nodes_graph(). Debido a que la función trabaja con redes bipartitas, las listas solo deben contener dos elementos cada una. La red resultante es una fusión de las capas de la red bipartita.
+```{r}
+mat_list<-list(Insectmat, Plantmat)
+g.list<-list(insect_aracne, plant_aracne)
+#Consideramos solo los 20 nodos más importantes y una alpha de 0.1.
+diff_g<-diff_nodes_graph(T_Collapsed, n = 20, mat_list, g.list, alpha = 0.05)
+#En el grafo resultante, aquellos nodos que cambian están representados con rojo
+#y aquellos sin diferencias significativas en azul.
+plot(diff_g, vertex.label.color="black", vertex.color = vertex.attributes(diff_g)$colorA,
+     vertex.label.cex=.5, vertex.label.dist=1,layout=layout_with_kk, vertex.size = 5)
+```

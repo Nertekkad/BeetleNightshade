@@ -1,0 +1,669 @@
+# Multiplex Lema-Datura SparCC {-}
+
+## Preprocesamiento de datos {-}
+
+Se cargan los datos y se extraen los datos de los taxones y los otus almacenados en objeto ps2.
+```{r echo=FALSE, cache=FALSE, results=FALSE, warning=FALSE, comment=FALSE, writing=FALSE}
+library(igraph)
+library(phyloseq)
+setwd("C:/Users/LaV_V/Downloads")
+print(load("mis_phyloseq.RData"))
+T_table<-as.data.frame(tax_table(ps2)); dim(T_table)
+O_table<-as.data.frame(t(otu_table(ps2))); dim(O_table)
+```
+Se carga la función T_Collapse
+```{r echo=FALSE, cache=FALSE, results=FALSE, warning=FALSE, comment=FALSE, writing=FALSE}
+#source("me falta guardarlo en un documento aparte")
+T_collapse<-function(T_table, O_table, names_level){
+  #Identifica los taxones y genera una matriz de columnas vacías
+  unq<-unique(T_table[,names_level]); unq
+  mat <- matrix(, nrow = length(O_table), ncol = 0)
+  #Fusiona los otus que pertenezcan al mismo taxón
+  for(i in 1:length(unq)){
+    a<-which(T_table[,names_level] %in% unq[i]); a
+    b<-as.matrix(colSums(O_table[a,]))
+    mat<-cbind(mat, b)
+  }
+  #Asigna los nombres a las columnas de la matriz resultante
+  colnames(mat)<-unq
+  #La matriz se transforma a valores relativos de las muestras
+  #mat<-mat/rowSums(mat)
+  return(mat)
+}
+```
+Se ingresa primero la tabla de taxones, luego la tabla de otus y finalmente el nivel taxonómico al cual se desea sintetizar la tabla.
+```{r echo=FALSE, cache=FALSE, results=FALSE, warning=FALSE, comment=FALSE, writing=FALSE}
+T_Collapsed<-T_collapse(T_table = T_table, O_table = O_table,
+                        names_level = "Genus")
+dim(T_Collapsed)
+```
+Se identifican los elementos no clasificados para ser eliminados.
+```{r}
+colnames(T_Collapsed)[1:10]
+T_Collapsed<-T_Collapsed[, -c(which(colnames(T_Collapsed) == "unclassified"))]
+                 #Activar en caso de trabajar a nivel de "Family"
+                 #which(colnames(T_Collapsed) == "JG30-KF-CM45"),
+                 #which(colnames(T_Collapsed) == "67-14"),
+                 #which(colnames(T_Collapsed) == "AKIW781"))]
+colnames(T_Collapsed)[1:10]
+```
+Se identifican los elementos pertenecientes a la planta y al insecto.
+```{r}
+Insect<-which(sample_data(ps2)$Type =="Insect")
+Insect<-sample_data(ps2)$ID[Insect]; Insect
+Plant<-which(sample_data(ps2)$Type =="Plant")
+Plant<-sample_data(ps2)$ID[Plant]; Plant
+```
+Generamos matrices independientes para los datos de la planta y del insecto.
+```{r}
+Insectmat <- T_Collapsed[Insect,]
+Plantmat <- T_Collapsed[Plant,]
+```
+
+## Generación de redes simples {-}
+
+Construímos la red correspondiente a los datos de abundancias del insecto.
+```{r}
+library(SpiecEasi)
+sparccNet<-sparcc(Insectmat)
+sparccNet <- abs(sparccNet$Cor) >= 0.4
+insect_sparCC<-adj2igraph(sparccNet)
+vertex.attributes(insect_sparCC) <- list(name = colnames(Insectmat))
+plot_network(insect_sparCC)
+```
+Repetimos el mismo proceso para el caso de la planta.
+```{r}
+sparccNet<-sparcc(Plantmat)
+sparccNet <- abs(sparccNet$Cor) >= 0.4
+plant_sparCC<-adj2igraph(sparccNet)
+vertex.attributes(plant_sparCC) <- list(name = colnames(Plantmat))
+plot_network(plant_sparCC)
+```
+Distribución del degree
+```{r cache=FALSE, results=FALSE, warning=FALSE, comment=FALSE, writing=FALSE}
+par(mfrow=c(1,2))
+
+# Calculamos la densidad
+dx1 <- density(degree(insect_sparCC), bw = 1)
+dx2 <- density(degree(plant_sparCC), bw = 1)
+
+# Creamos los histogramas con sus respectivas curvas de densidad y ruido asociado en el eje x.
+hist(degree(insect_sparCC), freq = FALSE, main = "Insect", ylab = "Density",
+     col = "khaki")
+lines(dx1, lwd = 2, col = "red")
+rug(jitter(degree(insect_sparCC)))
+
+hist(degree(plant_sparCC), freq = FALSE, main = "Plant", ylab = "Density",
+     col = "khaki")
+lines(dx2, lwd = 2, col = "blue")
+rug(jitter(degree(plant_sparCC)))
+
+par(mfrow=c(1,1))
+```
+Comparación de la distribución del degree entre capas y análisis de normalidad.
+```{r cache=FALSE, results=FALSE, warning=FALSE, comment=FALSE, writing=FALSE}
+# Aumentamos la resolución para visualizar mejor las diferencias
+dx1 <- density(degree(insect_sparCC), bw = 0.1)
+dx2 <- density(degree(plant_sparCC), bw = 0.1)
+
+# Graficamos las densidades
+plot(dx1, lwd = 2, main = "Degree dendities", xlab = "",
+     col = "red", xlim = c(-4, 6), ylim = c(0, 0.5))
+rug(jitter(degree(insect_sparCC)), col = "red")
+
+lines(dx2, lwd = 2, col = "blue")
+rug(jitter(degree(plant_sparCC)), col = "blue")
+
+Groups<-c("Insect", "Plant")
+legend("topleft", Groups, col = c("Red", "Blue"), lty = 1) 
+
+# Normalidad y resumen estadístico
+shapiro.test(degree(insect_sparCC))
+summary(degree(insect_sparCC))
+shapiro.test(degree(plant_sparCC))
+summary(degree(plant_sparCC))
+```
+En la función v_colored() se identifican los elementos únicos del nivel taxonómico de mayor jerarquía y se genera una paleta de colores con un color asociado a cada elemento.En el ciclo for se obtienen los números de identificación asociados a cada uno de los elementos de unq, para posteriormente asignarles un color dentro del grafo.
+```{r}
+v_colored<-function(g, T_table, g_tax, p_tax, g_colors){
+  require(igraph)
+  #Identificación de elementos únicos del taxón de mayor jerarquía
+  unq<-unique(T_table[,g_tax])
+  #Asignación de colores asociados a los elementos de g_tax en el objeto igraph
+  for(i in 1:length(unq)){
+    IDs<-which(unq[i] == T_table[,g_tax])
+    t_names<-unique(T_table[p_tax][IDs,])
+    vertex<-which(vertex.attributes(g)$name %in% t_names)
+    V(g)[vertex]$color<-g_colors[i]
+  }
+  return(g)
+}
+```
+
+El input de la función v_colored() es un objeto igraph, una paleta de colores cuya longitud debe coincidir con el input de g_tax, además de dos categorías taxonómicas, la primera de las cuales tendrá mayor jerarquía que la segunda. Por ejemplo, en caso de que emplearamos la categoría taxonómica de phylum como input en g_tax, p_tax podría ser cualquiera de los niveles taxonómicos inferiores (clase, familia o especie), además de que este debe ser equivalente al mismo input que se empleo previamente en la función T_Collapse().
+
+Nota: Si se desea visualizar mejor con zoom, use los comandos inectivados.
+```{r}
+unq<-unique(T_table[,"Phylum"])
+colors<-rainbow(length(unq))
+insect_sparCC<-v_colored(insect_sparCC, T_table, g_tax = "Phylum",
+               p_tax = "Genus", g_colors = colors)
+plant_sparCC<-v_colored(plant_sparCC, T_table, g_tax = "Phylum", p_tax = "Genus",
+                   g_colors = colors)
+plot(insect_sparCC, vertex.label.color="black",
+     vertex.color = vertex.attributes(insect_sparCC)$color, vertex.label.cex=.5,
+     vertex.label.dist=1,layout=layout_with_kk, vertex.size = 5)
+legend(x=-2.7, y=-0.3, unq, title = "Insect", pch=21, pt.bg=colors, pt.cex=2, cex=.8, bty="n", ncol=1)
+#Aplicar este código e inactivar el anterior solo cuando se deseé visualizar
+#el gráfico en Zoom,
+#legend(x=-2, y=0.3, unq, pch=21, pt.bg=colors, pt.cex=2, cex=.8,
+#       bty="n", ncol=1)
+plot(plant_sparCC, vertex.label.color="black",
+     vertex.color = vertex.attributes(plant_sparCC)$color, vertex.label.cex=.5,
+     vertex.label.dist=1,layout=layout_with_kk, vertex.size = 5)
+legend(x=-2.7, y=-0.3, unq, title = "Plant", pch=21, pt.bg=colors, pt.cex=2, cex=.8, bty="n", ncol=1)
+#Aplicar este código e inactivar el anterior solo cuando se deseé visualizar
+#el gráfico en Zoom,
+#legend(x=-2, y=0.3, unq, pch=21, pt.bg=colors, pt.cex=2, cex=.8,
+#       bty="n", ncol=1)
+```
+Para poder visualizar la abundancia relativa de los nodos en la red, construimos la función g_abundance(), misma que tiene como entrada la matriz de abundancias de la red y un objeto tipo igraph. La función transforma las abundancias absolutas de los datos de entrada en abundancias relativas. Se generar una paleta de colores donde entre mayor sea la abundancia de un nodo, éste se representará con un tono más azulado, mientras que los tonos próximos al amarillo corresponden a nodos con baja abundancia relativa.
+```{r}
+g_abundance<-function(layer_mat, g){
+     #Abundancias absolutas a abundancias relativas
+     net_ab<-colSums(layer_mat)
+     net_ab<-as.numeric((net_ab)/net_ab[which.max(net_ab)])
+     #Paleta de colores
+     abcol<-topo.colors(5)
+     #Asignación de colores
+     ab1<-which(net_ab > 0 & net_ab <= 0.2)
+          V(g)[ab1]$rel_ab<-abcol[5]
+     ab2<-which(net_ab > 0.2 & net_ab <= 0.4)
+          V(g)[ab2]$rel_ab<-abcol[4]
+     ab3<-which(net_ab > 0.4 & net_ab <= 0.6)
+          V(g)[ab3]$rel_ab<-abcol[3]
+     ab4<-which(net_ab > 0.6 & net_ab <= 0.8)
+          V(g)[ab4]$rel_ab<-abcol[2]
+     ab5<-which(net_ab > 0.8 & net_ab <= 1)
+          V(g)[ab5]$rel_ab<-abcol[1]
+     vertex.attributes(g)$rel_ab
+     return(g)
+}
+```
+
+Graficamos las abundancias relativas de ambas capas con la función g_abundance()
+```{r}
+insect_sparCC<-g_abundance(layer_mat = Insectmat, g = insect_sparCC)
+plant_sparCC<-g_abundance(layer_mat = Plantmat, g = plant_sparCC)
+plot(insect_sparCC, vertex.label.color="black",
+      vertex.color = vertex.attributes(insect_sparCC)$rel_ab, vertex.label.cex=.5,
+      vertex.label.dist=1,layout=layout_with_kk, vertex.size = 5)
+plot(plant_sparCC, vertex.label.color="black",
+      vertex.color = vertex.attributes(plant_sparCC)$rel_ab, vertex.label.cex=.5,
+      vertex.label.dist=1,layout=layout_with_kk, vertex.size = 5)
+```
+
+Generamos un objeto muxViz como una lista de redes igraph, y se construye una matriz de abundancias.
+```{r}
+library(muxViz)
+g.list<-list(insect_sparCC, plant_sparCC)
+insect_ab<-colSums(Insectmat)
+insect_ab<-as.numeric((insect_ab)/insect_ab[which.max(insect_ab)])
+plant_ab<-colSums(Plantmat)
+plant_ab<-as.numeric((plant_ab)/plant_ab[which.max(plant_ab)])
+abundances<-c(insect_ab, plant_ab)
+Nodes<-length(V(insect_sparCC))
+Layers<-length(g.list)
+node.ab.matrix <- matrix((abundances+1)*10, Nodes, Layers)
+```
+Construímos el gráfico 3D de una red multicapa multiplex con el paquete muxViz.
+```{r echo=FALSE, cache=FALSE, results=FALSE, warning=FALSE, comment=FALSE, warning=FALSE}
+lay <- layoutMultiplex(g.list, layout="fr", ggplot.format=F, box=T)
+plot_multiplex3D(g.list, layer.layout=lay,
+                 layer.colors=rainbow(length(g.list)),
+                 layer.shift.x=0.5, layer.space=2,
+                 layer.labels=c("Insect", "Plant"), layer.labels.cex=1.5,
+                 node.size.values=node.ab.matrix, node.size.scale=0.6,
+                 node.colors=vertex.attributes(insect_sparCC)$color,
+                 edge.colors="white",
+                 node.colors.aggr=vertex.attributes(insect_sparCC)$color,
+                 show.aggregate=T)
+```
+Esta función nos permite clasificar los nodos en categorías taxonómicas superiores, es decir, que si los nodos representan géneros o familias, esta función permite clasificarlos a niveles superiores tales como Phylum.
+```{r}
+TaxGroup<-function(g, T_table, g_tax, p_tax){
+  require(igraph)
+  unq<-unique(T_table[,g_tax])
+  for(i in 1:length(unq)){
+    IDs<-which(unq[i] == T_table[,g_tax])
+    t_names<-unique(T_table[p_tax][IDs,])
+    vertex<-which(vertex.attributes(g)$name %in% t_names)
+    V(g)[vertex]$Taxon<-unq[i]
+  }
+  return(g)
+}
+insect_sparCC<-TaxGroup(insect_sparCC, T_table, "Phylum", "Genus")
+plant_sparCC<-TaxGroup(plant_sparCC, T_table, "Phylum", "Genus")
+vertex.attributes(insect_sparCC)$Taxon[1:12]
+```
+El análisis de clusters se realizó por el método Louvain, mismo que optimiza la modularidad para detectar comunidades de nodos muy interconectados mediante el calculo la densidad de aristas dentro de la red. El grado de clusterización varía entre -1 y 1. Las aristas que conectan los nodos dentro de la comunidad están representados en negro, mientras que aquellas que conectan nodos entre comunidades distintas resaltan en rojo. Para visualizar mejor el gráfico se eliminaron los nodos cuyo degree fuese 0.
+```{r}
+insect_sparCCA<-delete.vertices(insect_sparCC, which(degree(insect_sparCC) == 0))
+insect_cluster<-cluster_louvain(insect_sparCCA)
+plot(insect_cluster, insect_sparCCA, vertex.label.color="black", main = "Insect",
+     vertex.label.cex=.5,layout=layout_with_kk, vertex.size = 5)
+plant_sparCCA<-delete.vertices(plant_sparCC, which(degree(plant_sparCC) == 0))
+plant_cluster<-cluster_louvain(plant_sparCCA)
+plot(plant_cluster, plant_sparCCA, vertex.label.color="black", main = "Plant",
+     vertex.label.cex=.5,layout=layout_with_kk, vertex.size = 5)
+```
+Clusterización por el método optimal.
+```{r eval=FALSE}
+insect_sparCCA<-delete.vertices(insect_sparCC, which(degree(insect_sparCC) == 0))
+insect_cluster<-cluster_optimal(insect_sparCCA)
+plot(insect_cluster, insect_sparCCA, vertex.label.color="black", main = "Insect",
+     vertex.label.cex=.5,layout=layout_with_kk, vertex.size = 5)
+plant_sparCCA<-delete.vertices(plant_sparCC, which(degree(plant_sparCC) == 0))
+plant_cluster<-cluster_optimal(plant_sparCCA)
+plot(plant_cluster, plant_sparCCA, vertex.label.color="black", main = "Plant",
+     vertex.label.cex=.5,layout=layout_with_kk, vertex.size = 5)
+```
+Clusterización por el método fast-greedy.
+```{r}
+insect_sparCCA<-delete.vertices(insect_sparCC, which(degree(insect_sparCC) == 0))
+insect_cluster<-cluster_fast_greedy(insect_sparCCA)
+plot(insect_cluster, insect_sparCCA, vertex.label.color="black", main = "Insect",
+     vertex.label.cex=.5,layout=layout_with_kk, vertex.size = 5)
+plant_sparCCA<-delete.vertices(plant_sparCC, which(degree(plant_sparCC) == 0))
+plant_cluster<-cluster_fast_greedy(plant_sparCCA)
+plot(plant_cluster, plant_sparCCA, vertex.label.color="black", main = "Plant",
+     vertex.label.cex=.5,layout=layout_with_kk, vertex.size = 5)
+```
+Construimos una función que nos permite colorear los nodos en función de su centralidad. El objeto ctr_type puede corresponder a "degree", "betweenness" y "closeness".
+```{r}
+ctr<-function(g.list, ctr_type){
+  require(igraph)
+  if(ctr_type == "degree"){
+    for(i in 1:length(g.list)){
+       ctr_max<-which.max(degree(g.list[[i]]))
+       ctr<-degree(g.list[[i]])/degree(g.list[[i]])[ctr_max]
+       Redpal<-heat.colors(5, alpha=1)
+       hl1<-which(ctr > 0 & ctr <= 0.2)
+       V(g.list[[i]])[hl1]$hl<-Redpal[5]
+       hl2<-which(ctr > 0.2 & ctr <= 0.4)
+       V(g.list[[i]])[hl2]$hl<-Redpal[4]
+       hl3<-which(ctr > 0.4 & ctr <= 0.6)
+       V(g.list[[i]])[hl3]$hl<-Redpal[3]
+       hl4<-which(ctr > 0.6 & ctr <= 0.8)
+       V(g.list[[i]])[hl4]$hl<-Redpal[2]
+       hl5<-which(ctr > 0.8 & ctr <= 1)
+       V(g.list[[i]])[hl5]$hl<-Redpal[1]
+       vertex.attributes(g.list[[i]])$hl
+       }
+    }
+    if(ctr_type == "betweenness"){
+    for(i in 1:length(g.list)){
+       ctr_max<-which.max(betweenness(g.list[[i]]))
+       ctr<-betweenness(g.list[[i]])/betweenness(g.list[[i]])[ctr_max]
+       Redpal<-heat.colors(5, alpha=1)
+       hl1<-which(ctr > 0 & ctr <= 0.2)
+       V(g.list[[i]])[hl1]$hl<-Redpal[5]
+       hl2<-which(ctr > 0.2 & ctr <= 0.4)
+       V(g.list[[i]])[hl2]$hl<-Redpal[4]
+       hl3<-which(ctr > 0.4 & ctr <= 0.6)
+       V(g.list[[i]])[hl3]$hl<-Redpal[3]
+       hl4<-which(ctr > 0.6 & ctr <= 0.8)
+       V(g.list[[i]])[hl4]$hl<-Redpal[2]
+       hl5<-which(ctr > 0.8 & ctr <= 1)
+       V(g.list[[i]])[hl5]$hl<-Redpal[1]
+       vertex.attributes(g.list[[i]])$hl
+       }
+    }
+    if(ctr_type == "closeness"){
+    for(i in 1:length(g.list)){
+       ctr_max<-which.max(closeness(g.list[[i]]))
+       ctr<-closeness(g.list[[i]])/closeness(g.list[[i]])[ctr_max]
+       Redpal<-heat.colors(5, alpha=1)
+       hl1<-which(ctr > 0 & ctr <= 0.2)
+       V(g.list[[i]])[hl1]$hl<-Redpal[5]
+       hl2<-which(ctr > 0.2 & ctr <= 0.4)
+       V(g.list[[i]])[hl2]$hl<-Redpal[4]
+       hl3<-which(ctr > 0.4 & ctr <= 0.6)
+       V(g.list[[i]])[hl3]$hl<-Redpal[3]
+       hl4<-which(ctr > 0.6 & ctr <= 0.8)
+       V(g.list[[i]])[hl4]$hl<-Redpal[2]
+       hl5<-which(ctr > 0.8 & ctr <= 1)
+       V(g.list[[i]])[hl5]$hl<-Redpal[1]
+       vertex.attributes(g.list[[i]])$hl
+       }
+   }
+   return(g.list)
+}
+```
+Realizamos una función con mismo propósito para redes simples.
+```{r}
+ctr_g<-function(g, ctr_type){
+  require(igraph)
+    for(i in 1:length(g.list)){
+       ctr_max<-which.max(degree(g))
+       ctr<-degree(g)/degree(g)[ctr_max]
+       Redpal<-heat.colors(5, alpha=1)
+       hl1<-which(ctr > 0 & ctr <= 0.2)
+       V(g)[hl1]$hl<-Redpal[5]
+       hl2<-which(ctr > 0.2 & ctr <= 0.4)
+       V(g)[hl2]$hl<-Redpal[4]
+       hl3<-which(ctr > 0.4 & ctr <= 0.6)
+       V(g)[hl3]$hl<-Redpal[3]
+       hl4<-which(ctr > 0.6 & ctr <= 0.8)
+       V(g)[hl4]$hl<-Redpal[2]
+       hl5<-which(ctr > 0.8 & ctr <= 1)
+       V(g)[hl5]$hl<-Redpal[1]
+       vertex.attributes(g)$hl
+  }
+  if(ctr_type == "betweenness"){
+       ctr_max<-which.max(betweenness(g))
+       ctr<-betweenness(g)/betweenness(g)[ctr_max]
+       Redpal<-heat.colors(5, alpha=1)
+       hl1<-which(ctr > 0 & ctr <= 0.2)
+       V(g)[hl1]$hl<-Redpal[5]
+       hl2<-which(ctr > 0.2 & ctr <= 0.4)
+       V(g)[hl2]$hl<-Redpal[4]
+       hl3<-which(ctr > 0.4 & ctr <= 0.6)
+       V(g)[hl3]$hl<-Redpal[3]
+       hl4<-which(ctr > 0.6 & ctr <= 0.8)
+       V(g)[hl4]$hl<-Redpal[2]
+       hl5<-which(ctr > 0.8 & ctr <= 1)
+       V(g)[hl5]$hl<-Redpal[1]
+       vertex.attributes(g)$hl
+  }
+  if(ctr_type == "closeness"){
+       ctr_max<-which.max(closeness(g))
+       ctr<-closeness(g)/closeness(g)[ctr_max]
+       Redpal<-heat.colors(5, alpha=1)
+       hl1<-which(ctr > 0 & ctr <= 0.2)
+       V(g)[hl1]$hl<-Redpal[5]
+       hl2<-which(ctr > 0.2 & ctr <= 0.4)
+       V(g)[hl2]$hl<-Redpal[4]
+       hl3<-which(ctr > 0.4 & ctr <= 0.6)
+       V(g)[hl3]$hl<-Redpal[3]
+       hl4<-which(ctr > 0.6 & ctr <= 0.8)
+       V(g)[hl4]$hl<-Redpal[2]
+       hl5<-which(ctr > 0.8 & ctr <= 1)
+       V(g)[hl5]$hl<-Redpal[1]
+       vertex.attributes(g)$hl
+  }
+  return(g)
+}
+```
+Visualización de redes individuales en función del degree.
+```{r}
+g.list_d<-ctr(g.list, ctr_type = "degree")
+plot(g.list_d[[1]], vertex.label.color="black",
+     vertex.color = vertex.attributes(g.list_d[[1]])$hl, vertex.label.cex=.5,
+     vertex.label.dist=1,layout=layout_with_kk, vertex.size = 5)
+title(main = "Insect")
+
+plot(g.list_d[[2]], vertex.label.color="black",
+     vertex.color = vertex.attributes(g.list_d[[2]])$hl, vertex.label.cex=.5,
+     vertex.label.dist=1,layout=layout_with_kk, vertex.size = 5)
+title(main = "Plant")
+```
+Construcción de gráfico de red multiplex 3D para degree.
+```{r}
+hl1<-as.vector(vertex.attributes(g.list_d[[1]])$hl)
+hl2<-as.vector(vertex.attributes(g.list_d[[2]])$hl)
+hl_colors<-c(hl1, hl2)
+Nodes<-length(V(g.list[[1]]))
+Layers<-length(g.list)
+node.colors.matrix <- matrix(hl_colors, Nodes, Layers)
+lay <- layoutMultiplex(g.list_d, layout="fr", ggplot.format=F, box=T)
+plot_multiplex3D(g.list_d, layer.layout=lay,
+                 layer.colors=rainbow(length(g.list_d)),
+                 layer.shift.x=0.5, layer.space=2,
+                 layer.labels=c("Insect", "Plant"), layer.labels.cex=1.5,
+                 node.size.values="auto", node.size.scale=0.8,
+                 node.colors=node.colors.matrix, edge.colors="#dadada",
+                 show.aggregate=F)
+```
+Construcción de gráfico de red multiplex 3D para betweenness.
+```{r}
+g.list_bt<-ctr(g.list, ctr_type = "betweenness")
+hl1<-as.vector(vertex.attributes(g.list_bt[[1]])$hl)
+hl2<-as.vector(vertex.attributes(g.list_bt[[2]])$hl)
+hl_colors<-c(hl1, hl2)
+node.colors.matrix <- matrix(hl_colors, Nodes, Layers)
+lay <- layoutMultiplex(g.list_bt, layout="fr", ggplot.format=F, box=T)
+plot_multiplex3D(g.list_bt, layer.layout=lay,
+                 layer.colors=rainbow(length(g.list_bt)),
+                 layer.shift.x=0.5, layer.space=2,
+                 layer.labels=c("Insect", "Plant"), layer.labels.cex=1.5,
+                 node.size.values="auto", node.size.scale=0.8,
+                 node.colors=node.colors.matrix, edge.colors="#dadada",
+                 show.aggregate=F)
+```
+Construcción de gráfico de red multiplex 3D para closeness.
+```{r echo=FALSE, cache=FALSE, results=FALSE, warning=FALSE, comment=FALSE, writing=FALSE}
+g.list_cl<-ctr(g.list, ctr_type = "closeness")
+hl1<-as.vector(vertex.attributes(g.list_cl[[1]])$hl)
+hl2<-as.vector(vertex.attributes(g.list_cl[[2]])$hl)
+hl_colors<-c(hl1, hl2)
+node.colors.matrix <- matrix(hl_colors, Nodes, Layers)
+lay <- layoutMultiplex(g.list_cl, layout="fr", ggplot.format=F, box=T)
+plot_multiplex3D(g.list_cl, layer.layout=lay,
+                 layer.colors=rainbow(length(g.list_cl)),
+                 layer.shift.x=0.5, layer.space=2,
+                 layer.labels=c("Insect", "Plant"), layer.labels.cex=1.5,
+                 node.size.values="auto", node.size.scale=0.8,
+                 node.colors=node.colors.matrix, edge.colors="#dadada",
+                 show.aggregate=F)
+```
+Generamos redes agregadas para cada tipo de centralidad y las introducimos como un objeto muxViz. Generamos una matriz de colores correspondiente a tres tipos distintos de centralidades: degree, betweenness y closeness.
+```{r}
+net_d<-GetAggregateNetworkFromNetworkList(g.list_d)
+net_bt<-GetAggregateNetworkFromNetworkList(g.list_bt)
+net_cl<-GetAggregateNetworkFromNetworkList(g.list_cl)
+
+d<-ctr_g(net_d, ctr_type = "degree")
+hl_d<-as.vector(vertex.attributes(d)$hl)
+bt<-ctr_g(net_bt, ctr_type = "betweenness")
+hl_bt<-as.vector(vertex.attributes(bt)$hl)
+cl<-ctr_g(net_cl, ctr_type = "closeness")
+hl_cl<-as.vector(vertex.attributes(cl)$hl)
+
+central_muxlist<-list(net_d, net_bt, net_cl)
+Nodes<-length(V(central_muxlist[[1]]))
+Layers<-length(central_muxlist)
+hl_colors2<-c(hl_d, hl_bt, hl_cl)
+node.colors.matrix <- matrix(hl_colors2, Nodes, Layers)
+```
+Se genera una matriz de abundancias.
+```{r}
+collapsed_ab<-colSums(T_Collapsed)
+collapsed_ab<-as.numeric(collapsed_ab/collapsed_ab[which.max(collapsed_ab)])
+collapsed_ab<-c(collapsed_ab, collapsed_ab, collapsed_ab)
+node.ab.matrix <- matrix((collapsed_ab+1)*10, Nodes, Layers)
+```
+Construímos un gráfico 3D representando los tres tipos de centralidad en un gradiente de color y el tamaño de los nodos en función de las abundancias.
+```{r echo=FALSE, cache=FALSE, results=FALSE, warning=FALSE, comment=FALSE, writing=FALSE}
+
+lay <- layoutMultiplex(central_muxlist, layout="fr", ggplot.format=F, box=T)
+plot_multiplex3D(central_muxlist, layer.layout=lay,
+                 layer.colors=rainbow(length(central_muxlist)),
+                 layer.shift.x=0.5, layer.space=2,
+                 layer.labels=c("Degree", "Betweenness", "Closeness"),    
+                 layer.labels.cex=1.5,
+                 node.size.values=node.ab.matrix, node.size.scale=0.8,
+                 node.colors=node.colors.matrix, edge.colors="#dadada",
+                 show.aggregate=F)
+```
+Identificamos el phylum de aquellos nodos con mayor grado de centralidad.
+Como se puede observar, la presencia de Proteobacteria es preponderante en
+nodos con centralidad alta.
+```{r}
+#Se carga la paleta de colores que se empleó previamente en los gráficos de
+#redes con valores de centralidad anexos.
+Redpal<-heat.colors(5, alpha=1)
+#Se localizan los nodos con mayor centralidad, correspondientes al rojo intenso
+#de los gráficos previos, y se asocian al phylum al que pertenecen.
+by_degree<-which(vertex.attributes(d)$hl == Redpal[1])
+vertex.attributes(insect_sparCC)$Taxon[by_degree]
+by_betweenness<-which(vertex.attributes(bt)$hl == Redpal[1])
+vertex.attributes(insect_sparCC)$Taxon[by_betweenness]
+by_closeness<-which(vertex.attributes(cl)$hl == Redpal[1])
+vertex.attributes(insect_sparCC)$Taxon[by_closeness]
+```
+Posteriormente generamos un diagrama de cuerda para poder visualizar la
+distribución de los phyla a lo largo de las muestras, para lo cual requeriremos
+el paquete circlize. Para ello empleamos nuevamente la función T_Collapse() y la
+programamos para obtener un data.frame a nivel de phylum. Posteriormente
+buscamos los identificadores de las muestras y sumamos las abundancias de cada
+uno de los phylum dentro de las muestras.
+```{r eval = FALSE}
+# Identificadores de las muestras.
+samples<-unique(sample_data(ps2)$Samples)
+# Generación de tabla de abundancias a nivel de phylum.
+phylum_table<-T_collapse(T_table, O_table, "Phylum"); dim(phylum_table)
+# Se genera un data.frame que contiene la suma de las abundancias de los phyla en cada muestra.
+data_frs<-list()
+for(i in 1:length(samples)){
+  s_data<-which(sample_data(ps2)$Samples == samples[i]); s_data
+  bacter_names<-colnames(phylum_table[s_data,])
+  ab_sums<-colSums(phylum_table[s_data,])
+  data_frs[[i]]<-data.frame("ID"=samples[i],"Taxa"=bacter_names, "Sums"=ab_sums)
+}
+length(samples)
+
+# Se construye el data.frame
+chord_df<-rbind.data.frame(data_frs[[1]], data_frs[[2]], data_frs[[3]],
+                           data_frs[[4]], data_frs[[5]], data_frs[[6]])
+# Se eliminan las filas donde la abundancia sea nula.
+chord_df<-chord_df[-which(chord_df$Sums == 0),]
+
+# Realizamos un gráfico de barras apiladas con ggplot
+
+```
+Generación del diagrama de cuerda. En la imagen podemos apresiar el peso que el
+phylum Proteobacteria tiene en las muestras, pues se muestra como preponderante
+en todas las muestras. Las muestras de F. epiphytes y huevos son las más diversas,
+al contener, aunque en menor medida, otros phyla dentro de los que destacan
+Actinobacteria y Bacteroidetes.
+La función circos.trackPlotRegion() modificada, se tomó de:
+https://bioinfo4all.wordpress.com/2021/03/13/tutorial-7-how-to-do-chord-diagram-using-r/
+```{r eval = False}
+library(circlize)
+#Se genera un chord_diagram con las leyendas suprimidas.
+chordDiagram(chord_df, annotationTrack = "grid", preAllocateTracks = 1)
+#Para evitar que los nombres se amontonen, se carga la función
+#circos.trackPlotRegion() modificada, misma que gira los nombres 90°.
+circos.trackPlotRegion(track.index = 2, panel.fun = function(x, y) {
+  xlim = get.cell.meta.data("xlim")
+  ylim = get.cell.meta.data("ylim")
+  sector.name = get.cell.meta.data("sector.index")
+  
+  #print labels 
+  circos.text(mean(xlim), ylim[1] + 2.5, sector.name, 
+              facing = "clockwise", niceFacing = TRUE, adj = c(0, 0.5), cex=0.6)
+  
+  #print axis
+  circos.axis(h = "top", labels.cex = 0.5, major.tick.percentage = 0.2, 
+              sector.index = sector.name, track.index = 2)
+}, bg.border = NA)
+circos.trackPlotRegion(chord_df)
+```
+También podemos visualizar la distribución en las muestras mediante ggplot
+```{r}
+# Identificadores de las muestras
+samples<-unique(sample_data(ps2)$Samples)
+# Generación de tabla de abundancias a nivel de phylum
+phylum_table<-T_collapse(T_table = T_table, O_table = O_table,
+                        names_level = "Phylum")
+# Se genera un data.frame que contiene la suma de las abundancias de los phyla en cada muestra
+data_frs<-list()
+for(i in 1:length(samples)){
+  s_data<-which(sample_data(ps2)$Samples == samples[i]); s_data
+  bacter_names<-colnames(phylum_table[s_data,])
+  ab_sums<-colSums(phylum_table[s_data,])
+  data_frs[[i]]<-data.frame("Taxa"=bacter_names, "Sums"=ab_sums, "ID"=samples[i])
+}
+ab_df<-data_frs[[1]]
+# Construímos el data.frame
+for(i in 2:length(data_frs)){
+  ab_df<-rbind.data.frame(ab_df, data_frs[[i]])
+}
+# Se eliminan los phylum cuya abundancia en las muestras sea 0
+ab_df<-ab_df[-which(ab_df$Sums == 0),]
+
+# Construímos un gráfico de barras apiladas de las abundancias en las muestras
+library(ggplot2)
+ggplot(ab_df)+
+  geom_col(mapping = aes(x = ID, y = Sums, fill = Taxa), position = "fill", show.legend = TRUE)+
+  ylab("Proportion of Community")
+
+# Graficamos la diversidad de las muestras.
+plot_richness(ps2, x = "Samples", color = "Specie", measures = c("Observed",
+             "Shannon", "Simpson")) + geom_boxplot()
+```
+Para identificar aquellos nodos que cambian entre capas y diferenciarlos de aquellos
+que permanecen sin diferencias significativas, construimos una función que aplique
+un t-test a cada par de nodos réplica en una red bipartita. Para efectos prácticos,
+solo se consideraron los nodos más abundantes, pues el bajo número de muestra de las
+menos abundantes, compromete la fiabilidad del t-test.
+```{r}
+diff_nodes_graph<-function(T_Collapsed, n, mat_list, g.list, alpha){
+  #Las listas solo deben contener dos elementos cada una.
+  if(length(mat_list)>2 | length(g.list)>2){
+    print("El input es una red bipartita")
+  } else if(length(mat_list)==2 & length(g.list)==2){
+    #Se consideran solo los "n" nodos más abundantes.
+    most_ab<-sort(apply(t(T_Collapsed), 1, sum),
+                  decreasing = T, index.return = F)[1:n]
+    #Se aislan las abundancias de los nodos seleccionados.
+    most_layer<-list()
+    for(i in 1:length(mat_list)){
+      most_layer[[i]]<-mat_list[[i]][, names(most_ab)]
+    }
+    #Se fusionan las capas.
+    aggregated_g<-GetAggregateNetworkFromNetworkList(g.list)
+    #Se realiza el t-test.
+    alpha<-alpha
+    for(i in 1:length(most_ab)){
+      if(t.test(most_layer[[1]][,i], most_layer[[2]][,i])$p.value<=alpha){
+        V(aggregated_g)[names(most_ab[i])]$colorA<-"blue"
+      } else if(t.test(most_layer[[1]][,i], most_layer[[2]][,i])$p.value>alpha){
+        V(aggregated_g)[names(most_ab[i])]$colorA<-"red"
+      }
+    }
+    return(aggregated_g)
+  }
+}
+```
+Identificamos diferencias significativas en las abundancias de los nodos entre capas mediante la función diff_nodes_graph(). Introducimos la tabla de abundancias totales (T_Collapsed), el número de nodos que queremos considerar, y las listas de las matrices y las capas de la red, además del valor de alpha para la prueba de t. Debido a que la función trabaja con redes bipartitas, las listas solo deben contener dos elementos cada una. La red resultante es una fusión de las capas de la red bipartita.
+```{r}
+mat_list<-list(Insectmat, Plantmat)
+g.list<-list(insect_sparCC, plant_sparCC)
+#Consideramos solo los 20 nodos más importantes y una alpha de 0.1.
+diff_g<-diff_nodes_graph(T_Collapsed, n = 20, mat_list, g.list, alpha = 0.05)
+#En el grafo resultante, aquellos nodos que cambian están representados con rojo
+#y aquellos sin diferencias significativas en azul.
+plot(diff_g, vertex.label.color="black", vertex.color = vertex.attributes(diff_g)$colorA,
+     vertex.label.cex=.5, vertex.label.dist=1,layout=layout_with_kk, vertex.size = 5)
+```
+
+Identificación de nodos sin cambios significativos en las abundancias.
+```{r}
+diff_g<-TaxGroup(diff_g, T_table, "Phylum", "Genus")
+not_diff<-which(vertex.attributes(diff_g)$colorA == "blue")
+vertex.attributes(diff_g)$name[not_diff]
+vertex.attributes(diff_g)$Taxon[not_diff]
+```
+Identificación de nodos sin cambios significativos en las abundancias.
+```{r}
+diff<-which(vertex.attributes(diff_g)$colorA == "red")
+print("Géneros con mayor abundancia en el escarabajo")
+d1<-which(colMeans(Insectmat[,diff]) > colMeans(Plantmat[,diff])); names(d1)
+vertex.attributes(diff_g)$Taxon[diff][d1]
+print("Géneros con mayor abundancia en la solanácea")
+d2<-which(colMeans(Insectmat[,diff]) < colMeans(Plantmat[,diff])); names(d2)
+vertex.attributes(diff_g)$Taxon[diff][d2]
+```
+
